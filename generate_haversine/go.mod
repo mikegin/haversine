@@ -1,4 +1,4 @@
-module github.com/mikegin/generate
+module github.com/mikegin/generate_haversine
 
 go 1.22.4
 
