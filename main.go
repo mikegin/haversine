@@ -12,21 +12,14 @@ import (
 	"github.com/mikegin/utils"
 )
 
-var p *profiler.Profiler
-
 func GetHaversinePairs(data []byte) []gjson.Result {
-	p.TimeFunctionStart(profiler.GetCurrentFunctionFrame().Function, 0)
-	defer p.TimeFunctionEnd(0)
+	profiler.GlobalProfiler.TimeFunctionStart(profiler.GetCurrentFunctionFrame().Function, 0)
+	defer profiler.GlobalProfiler.TimeFunctionEnd(0)
 
 	return gjson.Get(string(data), "pairs").Array()
 }
 
 func main() {
-
-	p = &profiler.Profiler{
-		StartTSC: uint64(profiler.ReadCPUTimer()),
-	}
-
 	args := os.Args
 
 	if len(args) != 2 && len(args) != 3 {
@@ -35,7 +28,7 @@ func main() {
 		return
 	}
 
-	p.TimeFunctionStart("Haversine File Read", 1)
+	profiler.GlobalProfiler.TimeFunctionStart("Haversine Pairs File Read", 1)
 	file, err := os.Open(args[1])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error opening file %v", err)
@@ -60,18 +53,20 @@ func main() {
 			break
 		}
 	}
-	p.TimeFunctionEnd(1)
+	profiler.GlobalProfiler.TimeFunctionEnd(1)
 
 	pairs := GetHaversinePairs(b)
 
-	p.TimeFunctionStart("Haversine Sum", 4)
 	sum := float64(0)
 	sumCoef := 1 / float64(len(pairs))
-	for _, p := range pairs {
-		p := p.Value().(map[string]interface{})
-		sum += sumCoef * utils.ReferenceHaversine(p["x0"].(float64), p["y0"].(float64), p["x1"].(float64), p["y1"].(float64), utils.EARTH_RADIUS)
-	}
-	p.TimeFunctionEnd(4)
+	func() {
+		profiler.GlobalProfiler.TimeFunctionStart("Haversine Sum", 4)
+		defer profiler.GlobalProfiler.TimeFunctionEnd(4)
+		for _, p := range pairs {
+			p := p.Value().(map[string]interface{})
+			sum += sumCoef * utils.ReferenceHaversine(p["x0"].(float64), p["y0"].(float64), p["x1"].(float64), p["y1"].(float64), utils.EARTH_RADIUS)
+		}
+	}()
 
 	fmt.Println("Input size:", fi.Size())
 	fmt.Println("Pair count:", len(pairs))
@@ -79,7 +74,7 @@ func main() {
 
 	// validation
 	if len(args) == 3 {
-		p.TimeFunctionStart("Haversine Answer Read", 2)
+		profiler.GlobalProfiler.TimeFunctionStart("Haversine Answer File Read", 2)
 		validateFile, err := os.Open(args[2])
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Error opening answers f64 file: %s", args[2])
@@ -102,9 +97,9 @@ func main() {
 
 		fmt.Println("Reference sum:", refSum)
 		fmt.Println("Difference:", refSum-sum)
-		p.TimeFunctionEnd(2)
+		profiler.GlobalProfiler.TimeFunctionEnd(2)
 	}
 
-	p.EndTSC = uint64(profiler.ReadCPUTimer())
-	p.PrintProfile()
+	profiler.GlobalProfiler.EndTSC = uint64(profiler.ReadCPUTimer())
+	profiler.GlobalProfiler.PrintProfile()
 }

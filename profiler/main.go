@@ -7,11 +7,20 @@ import (
 	"syscall"
 )
 
+// refers to a single call to a function, used to handle nested/recursive calls
+type ProfileBlock struct {
+	StartTSC            uint64
+	OldTSCElapsedAtRoot uint64
+	Parent              *ProfileAnchor
+}
+
 type ProfileAnchor struct {
-	TSCElapsed           uint64
-	HitCount             uint64
-	CurrentBlockStartTSC uint64
-	Label                string
+	TSCElapsed         uint64
+	TSCElapsedChildren uint64
+	TSCElapsedAtRoot   uint64
+	HitCount           uint64
+	Label              string
+	Blocks             []ProfileBlock
 }
 
 type Profiler struct {
@@ -19,6 +28,11 @@ type Profiler struct {
 	StartTSC       uint64
 	EndTSC         uint64
 }
+
+var GlobalProfiler *Profiler = &Profiler{
+	StartTSC: uint64(ReadCPUTimer()),
+}
+var GlobalProfilerParent *ProfileAnchor = nil
 
 func GetCurrentFunctionFrame() runtime.Frame {
 	pc := make([]uintptr, 15)
@@ -29,42 +43,87 @@ func GetCurrentFunctionFrame() runtime.Frame {
 }
 
 func (p *Profiler) TimeFunctionStart(name string, id int) {
+	if os.Getenv("PROFILER") != "true" {
+		return
+	}
 	if id >= len(p.ProfileAnchors) {
 		fmt.Fprintf(os.Stderr, "Out of bounds id pos in %s: %d", GetCurrentFunctionFrame().Function, id)
 	}
 
-	p.ProfileAnchors[id] = &ProfileAnchor{}
+	if p.ProfileAnchors[id] == nil {
+		p.ProfileAnchors[id] = &ProfileAnchor{}
+	}
 	pa := p.ProfileAnchors[id]
 	pa.Label = name
-	pa.CurrentBlockStartTSC = uint64(ReadCPUTimer())
+
+	b := ProfileBlock{
+		StartTSC:            uint64(ReadCPUTimer()),
+		Parent:              GlobalProfilerParent,
+		OldTSCElapsedAtRoot: pa.TSCElapsedAtRoot,
+	}
+	GlobalProfilerParent = pa
+	pa.Blocks = append(pa.Blocks, b)
 }
 
 func (p *Profiler) TimeFunctionEnd(id int) {
+	if os.Getenv("PROFILER") != "true" {
+		return
+	}
 	if id >= len(p.ProfileAnchors) {
 		fmt.Fprintf(os.Stderr, "Out of bounds id pos in %s: %d", GetCurrentFunctionFrame().Function, id)
 	}
 
 	pa := p.ProfileAnchors[id]
-	pa.TSCElapsed += uint64(ReadCPUTimer()) - pa.CurrentBlockStartTSC
+	endTSC := uint64(ReadCPUTimer())
+
+	// pop off current block
+	block := pa.Blocks[len(pa.Blocks)-1]
+	pa.Blocks = pa.Blocks[:len(pa.Blocks)-1]
+
+	elapsed := endTSC - block.StartTSC
+
+	if block.Parent != nil {
+		block.Parent.TSCElapsedChildren += elapsed
+	}
+
+	pa.TSCElapsed += elapsed
+
+	pa.TSCElapsedAtRoot = block.OldTSCElapsedAtRoot + elapsed
+
+	GlobalProfilerParent = block.Parent
+
 	pa.HitCount += 1
 
 }
 
 func (p *Profiler) PrintProfile() {
-	totalCPUElapsed := p.EndTSC - p.StartTSC
+	if os.Getenv("PROFILER") != "true" {
+		return
+	}
+	totalTSCElapsed := p.EndTSC - p.StartTSC
 	cpuFreq := EstimateCPUTimerFreq()
 
 	if cpuFreq > 0 {
-		fmt.Printf("\nTotal time: %0.4fms (CPU freq %d)\n", 1000.0*float64(totalCPUElapsed)/float64(cpuFreq), cpuFreq)
+		fmt.Printf("\nTotal time: %0.4fms (CPU freq %d)\n", 1000.0*float64(totalTSCElapsed)/float64(cpuFreq), cpuFreq)
 	}
 
 	for _, anchor := range p.ProfileAnchors {
 		if anchor != nil {
-			elapsed := anchor.TSCElapsed
-			if elapsed > 0 {
-				percent := 100.0 * float64(elapsed) / float64(totalCPUElapsed)
-				fmt.Printf("  %s[%d]: %d (%.2f%%)\n", anchor.Label, anchor.HitCount, elapsed, percent)
+			elapsedSelf := anchor.TSCElapsed - anchor.TSCElapsedChildren
+			percent := 100.0 * float64(elapsedSelf) / float64(totalTSCElapsed)
+			fmt.Printf("  %s[%d]: %d (%.2f%%", anchor.Label, anchor.HitCount, elapsedSelf, percent)
+
+			if anchor.TSCElapsedAtRoot != elapsedSelf {
+				fmt.Printf(", %.2f%% w/children", 100.0*float64(anchor.TSCElapsedAtRoot)/float64(totalTSCElapsed))
 			}
+
+			fmt.Printf(")")
+
+			if cpuFreq > 0 {
+				fmt.Printf(" %0.4fms", 1000.0*float64(elapsedSelf)/float64(cpuFreq))
+			}
+
+			fmt.Printf("\n")
 		}
 	}
 }
