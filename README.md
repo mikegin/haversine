@@ -3,6 +3,9 @@
 From Casey Muratori's Performance Aware Programming Series:
 https://www.computerenhance.com/p/table-of-contents
 
+
+gjson, match and pretty borrowed (to check profiling) from https://github.com/tidwall
+
 ### generate
 ```
 go run generate_haversine/main.go
